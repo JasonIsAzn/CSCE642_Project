@@ -7,6 +7,9 @@ import torch.optim as optim
 import random
 from collections import deque, namedtuple
 import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+from IPython.display import HTML
+import time
 
 # -----------------------
 # Experience Replay Buffer
@@ -179,6 +182,218 @@ class DQNAgent:
         self.target_net.load_state_dict(self.policy_net.state_dict())
 
 # -----------------------
+# Visualization Functions
+# -----------------------
+def visualize_episode_static(env, agent, save_path='episode_visualization.png'):
+    """Create a step-by-step visualization of an episode"""
+    state, _ = env.reset()
+    done = False
+    
+    # Record the episode
+    trajectory = [(env.vehicle_pos.copy(), env.request_pos.copy(), None, 0)]
+    total_reward = 0
+    
+    while not done:
+        action = agent.select_action(state, training=False)
+        state, reward, done, _, _ = env.step(action)
+        total_reward += reward
+        trajectory.append((env.vehicle_pos.copy(), env.request_pos.copy(), action, reward))
+    
+    # Create visualization
+    num_steps = len(trajectory)
+    cols = min(5, num_steps)
+    rows = (num_steps + cols - 1) // cols
+    
+    fig, axes = plt.subplots(rows, cols, figsize=(cols*3, rows*3))
+    if rows == 1:
+        axes = axes.reshape(1, -1)
+    axes = axes.flatten()
+    
+    action_names = ['UP', 'DOWN', 'LEFT', 'RIGHT', 'STAY', 'START']
+    
+    for idx, (vehicle, request, action, reward) in enumerate(trajectory):
+        ax = axes[idx]
+        
+        # Create grid
+        grid = np.zeros((env.grid_size, env.grid_size))
+        
+        # Mark request position
+        grid[int(request[1]), int(request[0])] = 2
+        
+        # Mark vehicle position
+        grid[int(vehicle[1]), int(vehicle[0])] = 1
+        
+        # Plot
+        ax.imshow(grid, cmap='RdYlGn', vmin=0, vmax=2, origin='lower')
+        ax.set_xticks(range(env.grid_size))
+        ax.set_yticks(range(env.grid_size))
+        ax.grid(True, alpha=0.3)
+        
+        action_name = action_names[action] if action is not None else action_names[5]
+        ax.set_title(f'Step {idx}\n{action_name}\nR={reward:.2f}', fontsize=10)
+        
+        # Add legend on first plot
+        if idx == 0:
+            from matplotlib.patches import Patch
+            legend_elements = [
+                Patch(facecolor='green', label='Vehicle'),
+                Patch(facecolor='red', label='Request')
+            ]
+            ax.legend(handles=legend_elements, loc='upper left', fontsize=8)
+    
+    # Hide unused subplots
+    for idx in range(num_steps, len(axes)):
+        axes[idx].axis('off')
+    
+    plt.suptitle(f'Episode Trajectory (Total Reward: {total_reward:.2f})', fontsize=14, y=1.02)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    print(f"Episode visualization saved as '{save_path}'")
+    plt.close()
+
+def visualize_episode_animated(env, agent, save_path='episode_animation.gif', fps=2):
+    """Create an animated GIF of an episode"""
+    state, _ = env.reset()
+    done = False
+    
+    # Record the episode
+    trajectory = []
+    total_reward = 0
+    
+    # Initial state
+    trajectory.append({
+        'vehicle': env.vehicle_pos.copy(),
+        'request': env.request_pos.copy(),
+        'action': None,
+        'reward': 0,
+        'step': 0
+    })
+    
+    step = 1
+    while not done:
+        action = agent.select_action(state, training=False)
+        state, reward, done, _, _ = env.step(action)
+        total_reward += reward
+        
+        trajectory.append({
+            'vehicle': env.vehicle_pos.copy(),
+            'request': env.request_pos.copy(),
+            'action': action,
+            'reward': reward,
+            'step': step
+        })
+        step += 1
+    
+    # Create animation
+    fig, ax = plt.subplots(figsize=(8, 8))
+    action_names = ['UP ↑', 'DOWN ↓', 'LEFT ←', 'RIGHT →', 'STAY ⊗']
+    
+    def update(frame):
+        ax.clear()
+        data = trajectory[frame]
+        
+        # Create grid
+        grid = np.zeros((env.grid_size, env.grid_size))
+        grid[int(data['request'][1]), int(data['request'][0])] = 2
+        grid[int(data['vehicle'][1]), int(data['vehicle'][0])] = 1
+        
+        # Plot
+        ax.imshow(grid, cmap='RdYlGn', vmin=0, vmax=2, origin='lower', alpha=0.8)
+        
+        # Add grid
+        ax.set_xticks(range(env.grid_size))
+        ax.set_yticks(range(env.grid_size))
+        ax.grid(True, alpha=0.3, color='black', linewidth=0.5)
+        
+        # Add markers
+        ax.plot(data['vehicle'][0], data['vehicle'][1], 'go', markersize=30, 
+                markeredgecolor='darkgreen', markeredgewidth=3, label='Vehicle')
+        ax.plot(data['request'][0], data['request'][1], 'r*', markersize=35, 
+                markeredgecolor='darkred', markeredgewidth=2, label='Request')
+        
+        # Title with info
+        action_str = action_names[data['action']] if data['action'] is not None else 'START'
+        title = f"Step {data['step']}/{len(trajectory)-1} | Action: {action_str}\n"
+        title += f"Reward: {data['reward']:.2f} | Total: {sum(t['reward'] for t in trajectory[:frame+1]):.2f}"
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        
+        ax.legend(loc='upper right', fontsize=10)
+        ax.set_xlabel('X Position', fontsize=12)
+        ax.set_ylabel('Y Position', fontsize=12)
+    
+    anim = FuncAnimation(fig, update, frames=len(trajectory), repeat=True, interval=1000//fps)
+    anim.save(save_path, writer='pillow', fps=fps)
+    print(f"Animated episode saved as '{save_path}'")
+    plt.close()
+
+def visualize_live_episode(env, agent, delay=0.5):
+    """Display episode with live updates (for interactive environments)"""
+    state, _ = env.reset()
+    done = False
+    step = 0
+    total_reward = 0
+    
+    plt.ion()
+    fig, ax = plt.subplots(figsize=(8, 8))
+    action_names = ['UP ↑', 'DOWN ↓', 'LEFT ←', 'RIGHT →', 'STAY ⊗']
+    
+    print("\n" + "="*60)
+    print("LIVE EPISODE VISUALIZATION")
+    print("="*60)
+    print(f"Vehicle Start: {env.vehicle_pos}")
+    print(f"Request Location: {env.request_pos}")
+    print("="*60 + "\n")
+    
+    while not done:
+        ax.clear()
+        
+        # Get action
+        action = agent.select_action(state, training=False)
+        
+        # Create grid
+        grid = np.zeros((env.grid_size, env.grid_size))
+        grid[int(env.request_pos[1]), int(env.request_pos[0])] = 2
+        grid[int(env.vehicle_pos[1]), int(env.vehicle_pos[0])] = 1
+        
+        # Plot
+        ax.imshow(grid, cmap='RdYlGn', vmin=0, vmax=2, origin='lower', alpha=0.8)
+        ax.set_xticks(range(env.grid_size))
+        ax.set_yticks(range(env.grid_size))
+        ax.grid(True, alpha=0.3, color='black', linewidth=0.5)
+        
+        # Add markers
+        ax.plot(env.vehicle_pos[0], env.vehicle_pos[1], 'go', markersize=30,
+                markeredgecolor='darkgreen', markeredgewidth=3, label='Vehicle')
+        ax.plot(env.request_pos[0], env.request_pos[1], 'r*', markersize=35,
+                markeredgecolor='darkred', markeredgewidth=2, label='Request')
+        
+        # Title
+        ax.set_title(f"Step {step} | Action: {action_names[action]}\n" + 
+                    f"Total Reward: {total_reward:.2f}",
+                    fontsize=14, fontweight='bold')
+        ax.legend(loc='upper right', fontsize=10)
+        ax.set_xlabel('X Position', fontsize=12)
+        ax.set_ylabel('Y Position', fontsize=12)
+        
+        plt.draw()
+        plt.pause(delay)
+        
+        # Take action
+        state, reward, done, _, _ = env.step(action)
+        total_reward += reward
+        step += 1
+        
+        # Print step info
+        print(f"Step {step}: {action_names[action]:8} | Vehicle: {env.vehicle_pos} | Reward: {reward:6.2f}")
+    
+    print("\n" + "="*60)
+    print(f"Episode Complete! Total Reward: {total_reward:.2f}")
+    print("="*60)
+    
+    plt.ioff()
+    plt.close()
+
+# -----------------------
 # Training Loop
 # -----------------------
 def train_dqn(env, agent, num_episodes=1000, batch_size=64, 
@@ -264,7 +479,7 @@ def evaluate_agent(env, agent, num_episodes=100):
     return avg_reward, success_rate
 
 # -----------------------
-# Visualization
+# Training Visualization
 # -----------------------
 def plot_training_results(episode_rewards, episode_lengths):
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
@@ -295,6 +510,7 @@ def plot_training_results(episode_rewards, episode_lengths):
     plt.tight_layout()
     plt.savefig('training_results.png', dpi=150)
     print("\nTraining plot saved as 'training_results.png'")
+    plt.close()
 
 # -----------------------
 # Main
@@ -344,24 +560,31 @@ if __name__ == "__main__":
     torch.save(agent.policy_net.state_dict(), 'dqn_dispatch_model.pth')
     print("\nModel saved as 'dqn_dispatch_model.pth'")
     
-    # Demonstrate a trained episode
+    # VISUALIZATIONS
     print("\n" + "=" * 60)
-    print("Demonstrating Trained Agent:")
+    print("Creating Visualizations...")
     print("=" * 60)
-    state, _ = env.reset()
-    done = False
-    step = 0
-    total_reward = 0
     
-    print(f"Initial - Vehicle: {env.vehicle_pos}, Request: {env.request_pos}")
+    # 1. Static step-by-step visualization
+    print("\n1. Creating static step-by-step visualization...")
+    visualize_episode_static(env, agent, save_path='episode_steps.png')
     
-    while not done and step < 20:
-        action = agent.select_action(state, training=False)
-        state, reward, done, _, _ = env.step(action)
-        total_reward += reward
-        step += 1
-        action_names = ['UP', 'DOWN', 'LEFT', 'RIGHT', 'STAY']
-        print(f"Step {step}: Action={action_names[action]}, Vehicle={env.vehicle_pos}, Reward={reward:.2f}")
+    # 2. Animated GIF visualization
+    print("\n2. Creating animated GIF (this may take a moment)...")
+    visualize_episode_animated(env, agent, save_path='episode_animation.gif', fps=2)
     
-    print(f"\nFinal Total Reward: {total_reward:.2f}")
-    print("Demo complete!")
+    # 3. Live visualization (comment out if running in non-interactive environment)
+    print("\n3. Starting live episode visualization...")
+    print("   (Close the plot window when done)")
+    try:
+        visualize_live_episode(env, agent, delay=0.5)
+    except:
+        print("   Live visualization skipped (non-interactive environment)")
+    
+    print("\n" + "=" * 60)
+    print("All Done! Check your directory for:")
+    print("  - training_results.png (training curves)")
+    print("  - episode_steps.png (step-by-step episode)")
+    print("  - episode_animation.gif (animated episode)")
+    print("  - dqn_dispatch_model.pth (trained model)")
+    print("=" * 60)
